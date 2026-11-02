@@ -1,11 +1,16 @@
 # Local monitoring configuration and runtime state
 /config/config.json
 /config/state.json
+/config/notify_backup.json
+/config/notify_feishu_deliveries.json
+/config/notify_feishu_watch_state.json
+/config/.notify_feishu_deliveries.lock
 /config/*.log
 /config/*.tmp
 
 # Generated systemd unit (contains installation-specific absolute paths)
 /systemd/codex-session-watchdog.service
+/systemd/codex-feishu-error-notifier.service
 
 # Python caches and test output
 __pycache__/

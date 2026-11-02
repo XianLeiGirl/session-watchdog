@@ -1,7 +1,7 @@
 {
   "name": "session-watchdog",
-  "version": "0.5.0",
-  "description": "Install and manage a resilient local watchdog for selected Codex sessions.",
+  "version": "0.6.0",
+  "description": "Monitor selected Codex sessions and optionally send completion/error notifications to Feishu.",
   "author": {
     "name": "Local"
   },
@@ -10,13 +10,15 @@
     "codex",
     "session-watchdog",
     "systemd",
-    "recovery"
+    "recovery",
+    "feishu",
+    "notifications"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Session Watchdog",
     "shortDescription": "Manage resilient Codex session monitoring",
-    "longDescription": "Install a user-level systemd watchdog, hot-reload the monitored session list, and automatically continue non-manually failed Codex turns.",
+    "longDescription": "Install a user-level systemd watchdog, hot-reload monitored sessions, continue non-manually failed Codex turns, and optionally notify Feishu on completion or fatal errors.",
     "developerName": "Local",
     "category": "Developer Tools",
     "capabilities": [

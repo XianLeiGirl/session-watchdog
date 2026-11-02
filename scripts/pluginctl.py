@@ -131,12 +131,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             Add --purge to also delete configuration and state.
 
   status    Show marketplace registration, plugin installation, service state,
-            configured interval/message, and monitored session IDs.
+            configured interval/message, monitored sessions, and Feishu state.
 
   list      List monitored session IDs.
   add       Add one or more monitored session IDs.
   remove    Stop monitoring one or more session IDs.
   configure Hot-reload the monitoring interval and/or continuation message.
+  configure-feishu
+            Save the Feishu chat ID and bytedcli path, install the Codex notify
+            hook, and start the fatal-error notification service.
+  disable-feishu
+            Stop Feishu notifications and restore the previous Codex notify hook.
+  notification-status
+            Check whether a specific thread/turn completion or error notification
+            has a successful local delivery record.
   start/stop/restart
             Control the installed systemd service.
 """,
@@ -146,7 +154,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         required=True,
         title="actions",
         metavar=(
-            "{plug-in,plug-out,status,list,add,remove,configure,start,stop,restart}"
+            "{plug-in,plug-out,status,list,add,remove,configure,configure-feishu,"
+            "disable-feishu,notification-status,start,stop,restart}"
         ),
     )
     subparsers.add_parser(
@@ -209,6 +218,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--message",
         help="non-empty text queued after an abnormal turn failure",
     )
+    feishu_parser = subparsers.add_parser(
+        "configure-feishu",
+        help="configure and enable Codex completion/error notifications in Feishu",
+        description=(
+            "Save the Feishu chat ID and bytedcli executable, install the Codex "
+            "notify hook, and start the fatal-error notification service."
+        ),
+    )
+    feishu_parser.add_argument(
+        "--chat-id",
+        required=True,
+        help="Feishu group chat ID used by bytedcli",
+    )
+    feishu_parser.add_argument(
+        "--bytedcli",
+        help="bytedcli executable name or absolute path (default: resolve bytedcli on PATH)",
+    )
+    subparsers.add_parser(
+        "disable-feishu",
+        help="disable Feishu notifications and restore the previous Codex notify hook",
+        description=(
+            "Stop the Feishu error watcher, remove its managed Codex notify hook, "
+            "and restore the notify setting saved before Feishu was enabled."
+        ),
+    )
+    notification_parser = subparsers.add_parser(
+        "notification-status",
+        help="check the Feishu delivery record for one Codex thread and turn",
+        description=(
+            "Report whether the local delivery ledger contains a successful "
+            "completion notification for THREAD_ID and TURN_ID. Add --error to "
+            "query the fatal-error notification instead."
+        ),
+    )
+    notification_parser.add_argument("thread_id", metavar="THREAD_ID")
+    notification_parser.add_argument("turn_id", metavar="TURN_ID")
+    notification_parser.add_argument(
+        "--error",
+        action="store_true",
+        help="query the fatal-error notification instead of completion",
+    )
     for command in ("start", "stop", "restart"):
         subparsers.add_parser(
             command,
@@ -233,6 +283,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.extend(["--poll-seconds", str(args.poll_seconds)])
             if args.message is not None:
                 arguments.extend(["--message", args.message])
+            result = manager(*arguments)
+        elif args.command == "configure-feishu":
+            arguments = ["configure-feishu", "--chat-id", args.chat_id]
+            if args.bytedcli is not None:
+                arguments.extend(["--bytedcli", args.bytedcli])
+            result = manager(*arguments)
+        elif args.command == "disable-feishu":
+            result = manager("disable-feishu")
+        elif args.command == "notification-status":
+            arguments = ["notification-status", args.thread_id, args.turn_id]
+            if args.error:
+                arguments.append("--error")
             result = manager(*arguments)
         else:
             raise PluginError(f"unsupported action: {args.command}")

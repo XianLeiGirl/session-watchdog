@@ -4,5 +4,10 @@
     "019a0000-0000-7000-8000-000000000002"
   ],
   "poll_seconds": 300,
-  "message": "继续"
+  "message": "继续",
+  "feishu": {
+    "enabled": false,
+    "chat_id": "oc_xxx",
+    "bytedcli": "bytedcli"
+  }
 }

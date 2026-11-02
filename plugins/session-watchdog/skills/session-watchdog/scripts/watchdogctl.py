@@ -6,16 +6,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 
 SERVICE = "codex-session-watchdog.service"
+FEISHU_SERVICE = "codex-feishu-error-notifier.service"
 DEFAULT_POLL_SECONDS = 300.0
 DEFAULT_MESSAGE = "继续"
 
@@ -58,6 +61,30 @@ def unit_path() -> Path:
 
 def unit_link_path() -> Path:
     return home_dir() / ".config" / "systemd" / "user" / SERVICE
+
+
+def notifier_path() -> Path:
+    return bundle_root() / "integrations" / "notify_feishu.py"
+
+
+def feishu_unit_path() -> Path:
+    return bundle_root() / "systemd" / FEISHU_SERVICE
+
+
+def feishu_unit_link_path() -> Path:
+    return home_dir() / ".config" / "systemd" / "user" / FEISHU_SERVICE
+
+
+def codex_config_path() -> Path:
+    return codex_home() / "config.toml"
+
+
+def notify_backup_path() -> Path:
+    return config_dir() / "notify_backup.json"
+
+
+def delivery_state_path() -> Path:
+    return config_dir() / "notify_feishu_deliveries.json"
 
 
 def legacy_config_dir() -> Path:
@@ -145,6 +172,11 @@ def load_config(create: bool = False) -> Dict[str, Any]:
                     "session_ids": [],
                     "poll_seconds": DEFAULT_POLL_SECONDS,
                     "message": DEFAULT_MESSAGE,
+                    "feishu": {
+                        "enabled": False,
+                        "chat_id": "",
+                        "bytedcli": "bytedcli",
+                    },
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -200,6 +232,7 @@ def service_state() -> Dict[str, Any]:
         "session_count": len(session_ids),
         "poll_seconds": document.get("poll_seconds", DEFAULT_POLL_SECONDS),
         "message": document.get("message", DEFAULT_MESSAGE),
+        "feishu": feishu_state(document),
     }
 
 
@@ -223,6 +256,335 @@ WantedBy=default.target
 """
 
 
+def desired_notify_command() -> List[str]:
+    return [str(Path(sys.executable).resolve()), str(notifier_path())]
+
+
+def is_legacy_feishu_notify(command: Optional[Sequence[str]]) -> bool:
+    if not command:
+        return False
+    try:
+        script = Path(command[-1]).expanduser().resolve()
+        legacy = (codex_home() / "notify_feishu.py").resolve()
+    except (OSError, RuntimeError):
+        return False
+    return script == legacy
+
+
+def read_codex_config() -> tuple[str, Dict[str, Any]]:
+    path = codex_config_path()
+    if not path.exists():
+        return "", {}
+    try:
+        text = path.read_text(encoding="utf-8")
+        document = tomllib.loads(text) if text.strip() else {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ControlError(f"cannot read Codex config {path}: {exc}") from exc
+    return text, document
+
+
+def current_notify_command(document: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
+    if document is None:
+        _, document = read_codex_config()
+    if "notify" not in document:
+        return None
+    value = document["notify"]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ControlError("top-level Codex notify setting must be an array of strings")
+    return list(value)
+
+
+def write_notify_command(command: Optional[Sequence[str]]) -> None:
+    text, document = read_codex_config()
+    current_notify_command(document)
+    lines = text.splitlines(keepends=True)
+    root_end = len(lines)
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("["):
+            root_end = index
+            break
+
+    matches = [
+        index
+        for index, line in enumerate(lines[:root_end])
+        if re.match(r"^\s*notify\s*=", line)
+    ]
+    if len(matches) > 1:
+        raise ControlError("Codex config contains multiple top-level notify settings")
+    if matches and "]" not in lines[matches[0]].split("=", 1)[1]:
+        raise ControlError("multi-line Codex notify settings are not supported")
+
+    replacement = None
+    if command is not None:
+        encoded = ", ".join(json.dumps(item, ensure_ascii=False) for item in command)
+        replacement = f"notify = [{encoded}]\n"
+
+    if matches:
+        index = matches[0]
+        if replacement is None:
+            del lines[index]
+        else:
+            lines[index] = replacement
+    elif replacement is not None:
+        lines.insert(0, replacement)
+
+    updated = "".join(lines)
+    try:
+        tomllib.loads(updated) if updated.strip() else {}
+    except tomllib.TOMLDecodeError as exc:
+        raise ControlError(f"refusing to write invalid Codex config: {exc}") from exc
+    atomic_write(codex_config_path(), updated, 0o600)
+
+
+def install_codex_notify() -> None:
+    _, document = read_codex_config()
+    previous = current_notify_command(document)
+    backup = notify_backup_path()
+    saved_backup: Optional[Dict[str, Any]] = None
+    if backup.exists():
+        try:
+            candidate = json.loads(backup.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ControlError(f"cannot read notify backup {backup}: {exc}") from exc
+        if not isinstance(candidate, dict):
+            raise ControlError(f"invalid notify backup: {backup}")
+        saved_backup = candidate
+
+    if saved_backup is not None and is_legacy_feishu_notify(saved_backup.get("value")):
+        atomic_write(
+            backup,
+            json.dumps({"present": False, "value": None}, indent=2) + "\n",
+            0o600,
+        )
+    elif not backup.exists():
+        migrate_legacy = is_legacy_feishu_notify(previous)
+        atomic_write(
+            backup,
+            json.dumps(
+                {
+                    "present": "notify" in document and not migrate_legacy,
+                    "value": None if migrate_legacy else previous,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            0o600,
+        )
+    write_notify_command(desired_notify_command())
+
+
+def restore_codex_notify() -> bool:
+    _, document = read_codex_config()
+    if current_notify_command(document) != desired_notify_command():
+        # The user changed notify after installation. Preserve that newer value
+        # and discard our stale backup so a future enable captures it afresh.
+        try:
+            notify_backup_path().unlink()
+        except FileNotFoundError:
+            pass
+        return False
+
+    backup = notify_backup_path()
+    if backup.exists():
+        try:
+            saved = json.loads(backup.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ControlError(f"cannot read notify backup {backup}: {exc}") from exc
+        if saved.get("present") is True:
+            value = saved.get("value")
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise ControlError(f"invalid notify backup: {backup}")
+            write_notify_command(value)
+        else:
+            write_notify_command(None)
+        backup.unlink()
+    else:
+        write_notify_command(None)
+    return True
+
+
+def resolve_bytedcli(value: str) -> str:
+    if "/" in value:
+        path = Path(value).expanduser()
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise ControlError(f"bytedcli executable was not found: {path}")
+        return str(path.resolve())
+    resolved = shutil.which(value)
+    if resolved is None:
+        raise ControlError(f"bytedcli executable was not found on PATH: {value}")
+    return str(Path(resolved).resolve())
+
+
+def feishu_unit_content() -> str:
+    python = str(Path(sys.executable).resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    notifier = str(notifier_path()).replace("\\", "\\\\").replace('"', '\\"')
+    return f"""[Unit]
+Description=Notify Feishu about Codex completion and fatal errors
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=\"{python}\" \"{notifier}\" --watch
+Restart=always
+RestartSec=3
+Environment=BYTEDCLI_NO_AUTO_UPGRADE=1
+Environment=LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
+Environment=LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
+UMask=0077
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def feishu_state(document: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if document is None:
+        document = load_config(create=False)
+    raw = document.get("feishu")
+    feishu = raw if isinstance(raw, dict) else {}
+    enabled = feishu.get("enabled") is True
+    chat_id = feishu.get("chat_id")
+    bytedcli = feishu.get("bytedcli")
+    service_enabled = systemctl("is-enabled", FEISHU_SERVICE, check=False)
+    service_active = systemctl("is-active", FEISHU_SERVICE, check=False)
+    try:
+        notify_installed = current_notify_command() == desired_notify_command()
+        notify_error = None
+    except ControlError as exc:
+        notify_installed = False
+        notify_error = str(exc)
+    result = {
+        "enabled": enabled,
+        "managed": (
+            feishu_unit_path().exists()
+            or (
+                feishu_unit_link_path().is_symlink()
+                and feishu_unit_link_path().resolve() == feishu_unit_path().resolve()
+            )
+            or notify_installed
+        ),
+        "configured": (
+            enabled
+            and isinstance(chat_id, str)
+            and bool(chat_id.strip())
+            and isinstance(bytedcli, str)
+            and bool(bytedcli.strip())
+        ),
+        "notify_installed": notify_installed,
+        "error_service_enabled": service_enabled.stdout.strip() == "enabled",
+        "error_service_active": service_active.stdout.strip() == "active",
+        "service": FEISHU_SERVICE,
+    }
+    try:
+        deliveries = load_delivery_records()
+        sent_times = [
+            record.get("sent_at")
+            for record in deliveries.values()
+            if isinstance(record.get("sent_at"), str)
+        ]
+        result["delivery_count"] = len(deliveries)
+        result["last_sent_at"] = max(sent_times) if sent_times else None
+    except ControlError as exc:
+        result["delivery_error"] = str(exc)
+    if notify_error is not None:
+        result["notify_error"] = notify_error
+    return result
+
+
+def load_delivery_records() -> Dict[str, Dict[str, Any]]:
+    path = delivery_state_path()
+    if not path.exists():
+        return {}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ControlError(f"cannot read Feishu delivery state {path}: {exc}") from exc
+    events = document.get("events", {})
+    if not isinstance(events, dict):
+        raise ControlError(f"invalid Feishu delivery state: {path}")
+    return {
+        str(key): value
+        for key, value in events.items()
+        if isinstance(value, dict)
+    }
+
+
+def notification_status(thread_id: str, turn_id: str, error: bool) -> Dict[str, Any]:
+    if not thread_id.strip() or not turn_id.strip():
+        raise ControlError("thread ID and turn ID must be non-empty")
+    event_key = f"{thread_id.strip()}|{turn_id.strip()}"
+    if error:
+        event_key += "|error"
+    record = load_delivery_records().get(event_key)
+    result: Dict[str, Any] = {
+        "thread_id": thread_id.strip(),
+        "turn_id": turn_id.strip(),
+        "event": "error" if error else "completion",
+        "sent": record is not None,
+    }
+    if record is not None:
+        result.update(
+            {
+                key: record[key]
+                for key in ("sent_at", "idempotency_key", "message_id")
+                if key in record
+            }
+        )
+    return result
+
+
+def install_feishu() -> Dict[str, Any]:
+    document = load_config(create=True)
+    raw = document.get("feishu")
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return feishu_state(document)
+    chat_id = raw.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id.strip():
+        raise ControlError("configure Feishu chat_id before installing notifications")
+    configured_binary = raw.get("bytedcli", "bytedcli")
+    if not isinstance(configured_binary, str) or not configured_binary.strip():
+        raise ControlError("feishu.bytedcli must be a non-empty string")
+    raw["bytedcli"] = resolve_bytedcli(configured_binary.strip())
+    document["feishu"] = raw
+    save_config(document)
+
+    notifier = notifier_path()
+    if not notifier.is_file():
+        raise ControlError(f"bundled Feishu notifier is missing: {notifier}")
+    os.chmod(notifier, 0o755)
+    install_codex_notify()
+    atomic_write(feishu_unit_path(), feishu_unit_content(), 0o644)
+    install_link(feishu_unit_path(), feishu_unit_link_path())
+    systemctl("daemon-reload")
+    systemctl("enable", "--now", FEISHU_SERVICE)
+    systemctl("restart", FEISHU_SERVICE)
+    state = feishu_state(document)
+    if not state["error_service_active"]:
+        raise ControlError(f"{FEISHU_SERVICE} did not become active")
+    return state
+
+
+def uninstall_feishu() -> Dict[str, Any]:
+    state = feishu_state()
+    if state["managed"]:
+        systemctl("disable", "--now", FEISHU_SERVICE, check=False)
+        try:
+            feishu_unit_link_path().unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            feishu_unit_path().unlink()
+        except FileNotFoundError:
+            pass
+        systemctl("daemon-reload", check=False)
+        systemctl("reset-failed", FEISHU_SERVICE, check=False)
+    restore_codex_notify()
+    return feishu_state()
+
+
 def migrate_legacy_files() -> None:
     old_config = legacy_config_dir()
     if old_config.is_dir() and old_config.resolve() != config_dir().resolve():
@@ -237,16 +599,19 @@ def migrate_legacy_files() -> None:
             pass
 
 
-def install_unit_link() -> None:
-    link = unit_link_path()
+def install_link(source: Path, link: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink():
-        if link.resolve() == unit_path().resolve():
+        if link.resolve() == source.resolve():
             return
         link.unlink()
     elif link.exists():
         link.unlink()
-    link.symlink_to(unit_path())
+    link.symlink_to(source)
+
+
+def install_unit_link() -> None:
+    install_link(unit_path(), unit_link_path())
 
 
 def cleanup_legacy_files() -> None:
@@ -286,10 +651,15 @@ def install() -> Dict[str, Any]:
     if not state["active"]:
         raise ControlError(f"{SERVICE} did not become active")
     cleanup_legacy_files()
-    return state
+    document = load_config(create=True)
+    feishu = document.get("feishu")
+    if isinstance(feishu, dict) and feishu.get("enabled") is True:
+        install_feishu()
+    return service_state()
 
 
 def uninstall(purge: bool) -> Dict[str, Any]:
+    uninstall_feishu()
     systemctl("disable", "--now", SERVICE, check=False)
     try:
         unit_link_path().unlink()
@@ -350,6 +720,37 @@ def configure(poll_seconds: Optional[float], message: Optional[str]) -> Dict[str
     return service_state()
 
 
+def configure_feishu(chat_id: str, bytedcli: Optional[str]) -> Dict[str, Any]:
+    if not chat_id.strip():
+        raise ControlError("Feishu chat ID must be non-empty")
+    document = load_config(create=True)
+    previous = document.get("feishu")
+    feishu = dict(previous) if isinstance(previous, dict) else {}
+    binary = bytedcli or str(feishu.get("bytedcli", "bytedcli"))
+    feishu.update(
+        {
+            "enabled": True,
+            "chat_id": chat_id.strip(),
+            "bytedcli": resolve_bytedcli(binary),
+        }
+    )
+    document["feishu"] = feishu
+    save_config(document)
+    install_feishu()
+    return service_state()
+
+
+def disable_feishu() -> Dict[str, Any]:
+    document = load_config(create=True)
+    previous = document.get("feishu")
+    feishu = dict(previous) if isinstance(previous, dict) else {}
+    feishu["enabled"] = False
+    document["feishu"] = feishu
+    save_config(document)
+    uninstall_feishu()
+    return service_state()
+
+
 def control_service(action: str) -> Dict[str, Any]:
     if not unit_path().is_file():
         raise ControlError("watchdog is not installed; run install first")
@@ -375,6 +776,14 @@ def build_parser() -> argparse.ArgumentParser:
     configure_parser = subparsers.add_parser("configure")
     configure_parser.add_argument("--poll-seconds", type=float)
     configure_parser.add_argument("--message")
+    feishu_parser = subparsers.add_parser("configure-feishu")
+    feishu_parser.add_argument("--chat-id", required=True)
+    feishu_parser.add_argument("--bytedcli")
+    subparsers.add_parser("disable-feishu")
+    notification_parser = subparsers.add_parser("notification-status")
+    notification_parser.add_argument("thread_id")
+    notification_parser.add_argument("turn_id")
+    notification_parser.add_argument("--error", action="store_true")
     uninstall_parser = subparsers.add_parser("uninstall")
     uninstall_parser.add_argument("--purge", action="store_true")
     return parser
@@ -393,6 +802,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = update_sessions(args.session_ids, remove=args.command == "remove")
         elif args.command == "configure":
             result = configure(args.poll_seconds, args.message)
+        elif args.command == "configure-feishu":
+            result = configure_feishu(args.chat_id, args.bytedcli)
+        elif args.command == "disable-feishu":
+            result = disable_feishu()
+        elif args.command == "notification-status":
+            result = notification_status(args.thread_id, args.turn_id, args.error)
         elif args.command in {"start", "stop", "restart"}:
             result = control_service(args.command)
         elif args.command == "uninstall":
