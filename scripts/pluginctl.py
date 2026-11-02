@@ -139,12 +139,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
   configure Hot-reload the monitoring interval and/or continuation message.
   configure-feishu
             Save the Feishu chat ID and bytedcli path, install the Codex notify
-            hook, and start the fatal-error notification service.
+            hook, and enable normal completed-turn notifications.
   disable-feishu
             Stop Feishu notifications and restore the previous Codex notify hook.
-  notification-status
-            Check whether a specific thread/turn completion or error notification
-            has a successful local delivery record.
   start/stop/restart
             Control the installed systemd service.
 """,
@@ -155,7 +152,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         title="actions",
         metavar=(
             "{plug-in,plug-out,status,list,add,remove,configure,configure-feishu,"
-            "disable-feishu,notification-status,start,stop,restart}"
+            "disable-feishu,start,stop,restart}"
         ),
     )
     subparsers.add_parser(
@@ -220,10 +217,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     feishu_parser = subparsers.add_parser(
         "configure-feishu",
-        help="configure and enable Codex completion/error notifications in Feishu",
+        help="configure and enable normal Codex completed-turn notifications in Feishu",
         description=(
             "Save the Feishu chat ID and bytedcli executable, install the Codex "
-            "notify hook, and start the fatal-error notification service."
+            "notify hook, and enable normal completed-turn notifications."
         ),
     )
     feishu_parser.add_argument(
@@ -239,25 +236,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "disable-feishu",
         help="disable Feishu notifications and restore the previous Codex notify hook",
         description=(
-            "Stop the Feishu error watcher, remove its managed Codex notify hook, "
-            "and restore the notify setting saved before Feishu was enabled."
+            "Remove the managed Codex notify hook and restore the notify setting "
+            "saved before Feishu was enabled."
         ),
-    )
-    notification_parser = subparsers.add_parser(
-        "notification-status",
-        help="check the Feishu delivery record for one Codex thread and turn",
-        description=(
-            "Report whether the local delivery ledger contains a successful "
-            "completion notification for THREAD_ID and TURN_ID. Add --error to "
-            "query the fatal-error notification instead."
-        ),
-    )
-    notification_parser.add_argument("thread_id", metavar="THREAD_ID")
-    notification_parser.add_argument("turn_id", metavar="TURN_ID")
-    notification_parser.add_argument(
-        "--error",
-        action="store_true",
-        help="query the fatal-error notification instead of completion",
     )
     for command in ("start", "stop", "restart"):
         subparsers.add_parser(
@@ -291,11 +272,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = manager(*arguments)
         elif args.command == "disable-feishu":
             result = manager("disable-feishu")
-        elif args.command == "notification-status":
-            arguments = ["notification-status", args.thread_id, args.turn_id]
-            if args.error:
-                arguments.append("--error")
-            result = manager(*arguments)
         else:
             raise PluginError(f"unsupported action: {args.command}")
     except (PluginError, json.JSONDecodeError) as exc:

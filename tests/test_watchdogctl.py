@@ -85,7 +85,18 @@ class WatchdogControllerTests(unittest.TestCase):
             notifier.idempotency_key(event_keys[2]),
         )
 
-    def test_successful_delivery_is_recorded_and_skips_duplicate_send(self):
+    def test_abnormal_turn_does_not_send_feishu_notification(self):
+        payload = {
+            "type": "agent-turn-complete",
+            "thread-id": SESSION_A,
+            "turn-id": "turn-failed",
+            "error": {"message": "rate limit"},
+        }
+        with mock.patch.object(notifier, "send_feishu", return_value=0) as send:
+            self.assertEqual(notifier.notify_completion(json.dumps(payload)), 0)
+        send.assert_not_called()
+
+    def test_send_uses_server_idempotency_without_local_ledger(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "config.json"
@@ -103,21 +114,21 @@ class WatchdogControllerTests(unittest.TestCase):
             )
             completed = mock.Mock(
                 returncode=0,
-                stdout=json.dumps({"ok": True, "data": {"message_id": "om_test"}}),
+                stdout=json.dumps({"ok": True}),
                 stderr="",
             )
             with (
                 mock.patch.object(notifier, "CONFIG_PATH", config),
-                mock.patch.object(notifier, "DELIVERY_STATE_PATH", root / "deliveries.json"),
-                mock.patch.object(notifier, "DELIVERY_LOCK_PATH", root / "deliveries.lock"),
                 mock.patch.object(notifier.subprocess, "run", return_value=completed) as run,
             ):
                 self.assertEqual(notifier.send_feishu("done", "thread|turn"), 0)
                 self.assertEqual(notifier.send_feishu("done", "thread|turn"), 0)
 
-            run.assert_called_once()
-            delivery = json.loads((root / "deliveries.json").read_text(encoding="utf-8"))
-            self.assertEqual(delivery["events"]["thread|turn"]["message_id"], "om_test")
+            self.assertEqual(run.call_count, 2)
+            commands = [call.args[0] for call in run.call_args_list]
+            keys = [command[command.index("--idempotency-key") + 1] for command in commands]
+            self.assertEqual(keys[0], keys[1])
+            self.assertEqual([path.name for path in root.iterdir()], ["config.json"])
 
     def test_codex_notify_setting_is_backed_up_and_restored(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -170,27 +181,54 @@ class WatchdogControllerTests(unittest.TestCase):
             restored = tomllib.loads(codex_config.read_text(encoding="utf-8"))
             self.assertNotIn("notify", restored)
 
-    def test_notification_status_reads_successful_delivery(self):
+    def test_cleanup_removes_old_error_watcher_and_local_state(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "deliveries.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "events": {
-                            f"{SESSION_A}|turn-a": {
-                                "sent_at": "2026-11-02T00:00:00+00:00",
-                                "idempotency_key": "codex-test",
-                            }
-                        }
-                    }
-                ),
-                encoding="utf-8",
+            root = Path(directory)
+            unit = root / "bundle" / "error-watcher.service"
+            link = root / "systemd-user" / "error-watcher.service"
+            wants = root / "systemd-user" / "default.target.wants" / "error-watcher.service"
+            config_dir = root / "config"
+            codex_home = root / ".codex"
+            unit.parent.mkdir(parents=True)
+            link.parent.mkdir(parents=True)
+            wants.parent.mkdir(parents=True)
+            config_dir.mkdir()
+            codex_home.mkdir()
+            unit.write_text("managed unit\n", encoding="utf-8")
+            link.write_text("ExecStart=python notify_feishu.py --watch\n", encoding="utf-8")
+            wants.symlink_to(link)
+            obsolete = [
+                config_dir / "notify_feishu_watch_state.json",
+                config_dir / "notify_feishu_deliveries.json",
+                config_dir / ".notify_feishu_deliveries.lock",
+                codex_home / "notify_feishu_watch_state.json",
+            ]
+            for path in obsolete:
+                path.write_text("{}\n", encoding="utf-8")
+            calls = []
+
+            def fake_systemctl(*arguments, **_kwargs):
+                calls.append(arguments)
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with (
+                mock.patch.object(watchdogctl, "feishu_unit_path", return_value=unit),
+                mock.patch.object(watchdogctl, "feishu_unit_link_path", return_value=link),
+                mock.patch.object(watchdogctl, "feishu_wants_link_path", return_value=wants),
+                mock.patch.object(watchdogctl, "config_dir", return_value=config_dir),
+                mock.patch.object(watchdogctl, "codex_home", return_value=codex_home),
+                mock.patch.object(watchdogctl, "systemctl", side_effect=fake_systemctl),
+            ):
+                watchdogctl.cleanup_legacy_feishu_runtime()
+
+            self.assertFalse(unit.exists())
+            self.assertFalse(link.exists())
+            self.assertFalse(wants.is_symlink())
+            self.assertTrue(all(not path.exists() for path in obsolete))
+            self.assertIn(
+                ("stop", watchdogctl.LEGACY_FEISHU_SERVICE),
+                calls,
             )
-            with mock.patch.object(watchdogctl, "delivery_state_path", return_value=path):
-                sent = watchdogctl.notification_status(SESSION_A, "turn-a", False)
-                missing = watchdogctl.notification_status(SESSION_A, "turn-b", False)
-            self.assertTrue(sent["sent"])
-            self.assertFalse(missing["sent"])
 
     def test_unified_command_delegates_session_add(self):
         output = io.StringIO()

@@ -109,7 +109,7 @@ loginctl enable-linger "$USER"
 状态和去重信息保存在 `~/session-watchdog/config/state.json`。同一失败事件只发送一次，避免对同一个
 已经终止的 turn 每 5 分钟重复刷消息；如果续跑后的新 turn 再次异常，则会继续发送且没有小时上限。
 
-## 飞书完成与异常通知
+## 飞书正常完成通知
 
 飞书通知依赖已安装、已登录的 `bytedcli`。启用并配置目标群聊：
 
@@ -125,10 +125,15 @@ session-watchdog-plugin configure-feishu \
   --bytedcli /absolute/path/to/bytedcli
 ```
 
-该命令会更新本地 `config/config.json`、把 Codex 的 `notify` 指向
-`~/session-watchdog/integrations/notify_feishu.py`，并启动
-`codex-feishu-error-notifier.service`。新开的 Codex 会话会使用新入口；已经运行的会话可能继续使用
-启动时加载的旧入口。原有 `notify` 设置会保存在本地，执行以下命令时恢复：
+该命令会执行以下动作：
+
+1. 把 chat ID 和解析后的 `bytedcli` 路径保存到不会提交到 Git 的 `config/config.json`；
+2. 备份原 Codex `notify` 设置，并把入口改为
+   `~/session-watchdog/integrations/notify_feishu.py`；
+3. 停止并删除旧版异常通知 watcher，删除其状态和旧投递账本。
+
+它不会启动新的飞书后台服务，也不会维护本地投递账本。新开的 Codex 会话会使用新入口；
+已经运行的会话可能继续使用启动时加载的旧入口。原有 `notify` 设置会保存在本地，执行以下命令时恢复：
 
 ```bash
 session-watchdog-plugin disable-feishu
@@ -136,17 +141,7 @@ session-watchdog-plugin disable-feishu
 
 完成通知使用 `thread-id + turn-id` 的 SHA-256 摘要作为飞书幂等键。同一 turn
 即使被重复回调也使用同一个键；同一会话的新 turn 会生成新键，所以能够多次完成、多次通知。
-异常通知另外在 `config/notify_feishu_watch_state.json` 中保存每个 rollout 文件的读取偏移；
-成功处理后才推进偏移，重启不会重放，发送失败则保留位置以便重试。
-
-成功发送后会把投递时间、幂等键和可用的飞书 `message_id` 写入本地账本。查询某一轮：
-
-```bash
-session-watchdog-plugin notification-status <THREAD_ID> <TURN_ID>
-```
-
-查询该轮的异常通知时增加 `--error`。账本仅在 bytedcli 返回成功且响应中 `ok=true`
-后写入；返回 `sent: true` 表示本地确认飞书已接受该次幂等请求。
+异常结束不发送飞书通知，由 Session Watchdog 自动发送配置中的续跑消息。
 
 列出最近会话：
 

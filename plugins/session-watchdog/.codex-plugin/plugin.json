@@ -1,7 +1,7 @@
 {
   "name": "session-watchdog",
-  "version": "0.6.0",
-  "description": "Monitor selected Codex sessions and optionally send completion/error notifications to Feishu.",
+  "version": "0.7.0",
+  "description": "Monitor selected Codex sessions and optionally notify Feishu after normal completed turns.",
   "author": {
     "name": "Local"
   },
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "Session Watchdog",
     "shortDescription": "Manage resilient Codex session monitoring",
-    "longDescription": "Install a user-level systemd watchdog, hot-reload monitored sessions, continue non-manually failed Codex turns, and optionally notify Feishu on completion or fatal errors.",
+    "longDescription": "Install a user-level systemd watchdog, hot-reload monitored sessions, continue non-manually failed Codex turns, and optionally notify Feishu after normal completed turns.",
     "developerName": "Local",
     "category": "Developer Tools",
     "capabilities": [
