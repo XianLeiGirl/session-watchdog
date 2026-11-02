@@ -37,7 +37,9 @@ session-watchdog-plugin list
 session-watchdog-plugin plug-out
 ```
 
-本地配置和运行状态分别保存在 `config/config.json` 与 `config/state.json`，它们不会提交到 Git。配置格式参考 `config.example.json`。
+本地配置和运行状态分别保存在 `config/config.json` 与 `config/state.json`，它们不会提交到 Git。
+`state.json` 会自动压缩：已处理且不再对应当前会话状态的事件保留 30 天，并最多保留最近
+1000 条；当前事件、未处理事件和重试状态不会被清理。配置格式参考 `config.example.json`。
 
 ## 飞书通知
 

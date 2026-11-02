@@ -22,13 +22,17 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 LOG = logging.getLogger("codex-session-watchdog")
 DEFAULT_POLL_SECONDS = 300.0
 DEFAULT_MESSAGE = "继续"
+STATE_EVENT_RETENTION_SECONDS = 30 * 86400.0
+STATE_ACTION_RETENTION_SECONDS = 7 * 86400.0
+MAX_HANDLED_STATE_EVENTS = 1000
+MAX_STATE_ACTIONS = 1000
 
 TRANSIENT_ERROR_CODES = {
     "flexunavailable",
@@ -292,9 +296,6 @@ class StateStore:
         event.update({"handled": True, "handled_at": now, "result": "queued"})
         actions = self.data.setdefault("actions", [])
         actions.append({"thread_id": thread_id, "signature": signature, "at": now})
-        self.data["actions"] = [
-            item for item in actions if item.get("at", 0) >= now - 7 * 86400
-        ][-1000:]
 
     def mark_ignored(self, signature: str, reason: str, now: float) -> None:
         self.event(signature).update(
@@ -314,8 +315,63 @@ class StateStore:
                 "result": "abandoned" if exhausted else "send_failed",
             }
         )
+        if exhausted:
+            event["handled_at"] = now
 
-    def save(self) -> None:
+    def prune(
+        self,
+        protected_signatures: Optional[Set[str]] = None,
+        now: Optional[float] = None,
+    ) -> bool:
+        protected = protected_signatures or set()
+        current_time = time.time() if now is None else now
+        event_cutoff = current_time - STATE_EVENT_RETENTION_SECONDS
+        action_cutoff = current_time - STATE_ACTION_RETENTION_SECONDS
+
+        raw_actions = self.data.get("actions", [])
+        actions = [
+            item
+            for item in raw_actions
+            if isinstance(item, dict)
+            and isinstance(item.get("at"), (int, float))
+            and item["at"] >= action_cutoff
+        ][-MAX_STATE_ACTIONS:]
+        action_times = {
+            item.get("signature"): item["at"]
+            for item in actions
+            if isinstance(item.get("signature"), str)
+        }
+
+        raw_events = self.data.get("events", {})
+        always_keep: Dict[str, Dict[str, Any]] = {}
+        handled_candidates: List[Tuple[float, str, Dict[str, Any]]] = []
+        if isinstance(raw_events, dict):
+            for signature, event in raw_events.items():
+                if not isinstance(signature, str) or not isinstance(event, dict):
+                    continue
+                if signature in protected or event.get("handled") is not True:
+                    always_keep[signature] = event
+                    continue
+                handled_at = event.get("handled_at", action_times.get(signature))
+                if not isinstance(handled_at, (int, float)):
+                    # Legacy handled entries without a timestamp remain safe.
+                    always_keep[signature] = event
+                    continue
+                if handled_at >= event_cutoff:
+                    handled_candidates.append((float(handled_at), signature, event))
+
+        handled_candidates.sort(key=lambda item: item[0], reverse=True)
+        events = dict(always_keep)
+        for _handled_at, signature, event in handled_candidates[:MAX_HANDLED_STATE_EVENTS]:
+            events[signature] = event
+
+        changed = events != raw_events or actions != raw_actions
+        self.data["events"] = events
+        self.data["actions"] = actions
+        return changed
+
+    def save(self, protected_signatures: Optional[Set[str]] = None) -> None:
+        self.prune(protected_signatures=protected_signatures)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
         try:
@@ -451,6 +507,32 @@ class Watchdog:
     def stop(self, _signum: int, _frame: Any) -> None:
         self.stop_requested = True
 
+    def _protected_state_signatures(self) -> Set[str]:
+        protected: Set[str] = set()
+        for tracker in self.trackers.values():
+            snapshot = tracker.snapshot
+            if snapshot.state == "failed":
+                protected.add(snapshot.signature)
+            elif (
+                snapshot.state == "running"
+                and self.args.stale_seconds > 0
+                and snapshot.last_activity is not None
+            ):
+                age = max(0.0, (utc_now() - snapshot.last_activity).total_seconds())
+                if age >= self.args.stale_seconds:
+                    protected.add(
+                        f"{snapshot.thread_id}:{snapshot.turn_id or 'no-turn'}:stale"
+                    )
+        return protected
+
+    def _save_state(self) -> None:
+        self.state.save(self._protected_state_signatures())
+
+    def _prune_state(self) -> None:
+        protected = self._protected_state_signatures()
+        if self.state.prune(protected_signatures=protected):
+            self.state.save(protected)
+
     def run(self) -> int:
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
@@ -472,6 +554,7 @@ class Watchdog:
             if now >= next_session_check:
                 for thread_id in list(self.threads):
                     self._poll_thread(thread_id)
+                self._prune_state()
                 next_session_check = now + self.args.poll_seconds
                 checked = True
 
@@ -570,7 +653,7 @@ class Watchdog:
                 describe_error(snapshot.error),
             )
             self.state.mark_ignored(signature, "non_transient", now_epoch)
-            self.state.save()
+            self._save_state()
             return
 
         if (
@@ -587,7 +670,7 @@ class Watchdog:
                     age,
                 )
                 self.state.mark_ignored(signature, "too_old", now_epoch)
-                self.state.save()
+                self._save_state()
                 return
 
         self._continue(snapshot.thread_id, signature, "failed turn")
@@ -619,7 +702,7 @@ class Watchdog:
                 self.args.max_resumes_per_hour,
             )
             self.state.event(signature)["next_attempt_at"] = now_epoch + 60.0
-            self.state.save()
+            self._save_state()
             return
 
         command = [
@@ -634,6 +717,7 @@ class Watchdog:
         if self.args.dry_run:
             LOG.warning("DRY RUN: would continue %s after %s: %s", thread_id, reason, command)
             self.state.mark_ignored(signature, "dry_run", now_epoch)
+            self._save_state()
             return
 
         LOG.warning("%s: %s; queueing %r", thread_id, reason, self.args.message)
@@ -648,7 +732,7 @@ class Watchdog:
         except (OSError, subprocess.TimeoutExpired) as exc:
             LOG.error("%s: failed to invoke Codex: %s", thread_id, exc)
             self.state.mark_failure(signature, now_epoch, self.args.max_send_attempts)
-            self.state.save()
+            self._save_state()
             return
 
         details = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
@@ -667,7 +751,7 @@ class Watchdog:
                 f": {details}" if details else "",
             )
             self.state.mark_failure(signature, now_epoch, self.args.max_send_attempts)
-        self.state.save()
+        self._save_state()
 
 
 def list_sessions(codex_home: Path, limit: int) -> int:

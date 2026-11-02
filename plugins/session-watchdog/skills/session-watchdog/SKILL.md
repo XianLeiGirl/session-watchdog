@@ -28,7 +28,7 @@ When the user invokes an explicit `/session-watchdog-*` command, follow that com
 - Remove the plugin, service, and managed worker while preserving configuration: `plug-out`.
 - Permanently remove plugin, service, worker, configuration, and state only when the user explicitly requests a purge: `plug-out --purge`.
 
-The configuration is authoritative and hot-reloaded. Do not restart the service after `add`, `remove`, or `configure`. Feishu settings stay local in the ignored `config/config.json`; never put a real chat ID or credentials in the skill or tracked example config. Feishu is invoked only by Codex's normal completed-turn notify hook; it has no error watcher or local delivery ledger. Do not edit Codex rollout files.
+The configuration is authoritative and hot-reloaded. Do not restart the service after `add`, `remove`, or `configure`. The watchdog prunes handled state after 30 days and caps recent handled events at 1000 while preserving current, unhandled, and retrying events. Feishu settings stay local in the ignored `config/config.json`; never put a real chat ID or credentials in the skill or tracked example config. Feishu is invoked only by Codex's normal completed-turn notify hook; it has no error watcher or local delivery ledger. Do not edit Codex rollout files.
 
 ## Mutation boundary
 

@@ -283,6 +283,62 @@ class WatchdogControllerTests(unittest.TestCase):
             self.assertEqual(args.poll_seconds, 17.0)
             self.assertEqual(args.message, "请继续处理")
 
+    def test_state_pruning_preserves_current_and_retrying_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            store = worker.StateStore(path)
+            now = 2_000_000_000.0
+            old = now - worker.STATE_EVENT_RETENTION_SECONDS - 1
+            store.data = {
+                "version": 1,
+                "events": {
+                    "expired": {"handled": True, "handled_at": old},
+                    "current": {"handled": True, "handled_at": old},
+                    "retrying": {
+                        "handled": False,
+                        "attempts": 3,
+                        "next_attempt_at": now + 60,
+                    },
+                    "recent": {"handled": True, "handled_at": now - 60},
+                    "legacy": {"handled": True},
+                },
+                "actions": [
+                    {"signature": "expired", "thread_id": SESSION_A, "at": old},
+                    {"signature": "recent", "thread_id": SESSION_A, "at": now - 60},
+                ],
+            }
+
+            self.assertTrue(store.prune({"current"}, now=now))
+            self.assertNotIn("expired", store.data["events"])
+            self.assertIn("current", store.data["events"])
+            self.assertIn("retrying", store.data["events"])
+            self.assertIn("recent", store.data["events"])
+            self.assertIn("legacy", store.data["events"])
+            self.assertEqual(
+                [item["signature"] for item in store.data["actions"]],
+                ["recent"],
+            )
+
+            store.mark_failure("exhausted", now, max_attempts=1)
+            self.assertEqual(store.data["events"]["exhausted"]["handled_at"], now)
+
+    def test_state_pruning_caps_recent_handled_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = worker.StateStore(Path(directory) / "state.json")
+            now = 2_000_000_000.0
+            total = worker.MAX_HANDLED_STATE_EVENTS + 5
+            store.data["events"] = {
+                f"event-{index}": {"handled": True, "handled_at": now - index}
+                for index in range(total)
+            }
+            self.assertTrue(store.prune(now=now))
+            self.assertEqual(
+                len(store.data["events"]),
+                worker.MAX_HANDLED_STATE_EVENTS,
+            )
+            self.assertIn("event-0", store.data["events"])
+            self.assertNotIn(f"event-{total - 1}", store.data["events"])
+
     def test_install_restarts_an_already_active_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
