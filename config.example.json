@@ -5,6 +5,8 @@
   ],
   "poll_seconds": 300,
   "message": "继续",
+  "max_send_attempts": 0,
+  "max_resumes_per_hour": 0,
   "feishu": {
     "enabled": false,
     "chat_id": "oc_xxx",

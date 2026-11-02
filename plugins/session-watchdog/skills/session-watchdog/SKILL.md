@@ -21,7 +21,7 @@ When the user invokes an explicit `/session-watchdog-*` command, follow that com
 - Install or update the plugin, worker, user service, and any configured Feishu integration: `plug-in`.
 - Add monitored sessions: `add <session-id>...`.
 - Remove monitored sessions: `remove <session-id>...`.
-- Configure the hot-reloaded interval and continuation text: `configure --poll-seconds <seconds> --message <text>`; either option may be omitted when changing only the other.
+- Configure hot-reloaded monitoring settings: `configure [--poll-seconds <seconds>] [--message <text>] [--max-send-attempts <count>] [--max-resumes-per-hour <count>]`; either limit uses `0` for unlimited.
 - Configure and enable normal Feishu completed-turn notifications: `configure-feishu --chat-id <chat-id> [--bytedcli <path>]`.
 - Disable Feishu notifications and restore the prior Codex notify hook: `disable-feishu`.
 - Control the installed service: `start`, `stop`, or `restart`.

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 LOG = logging.getLogger("codex-session-watchdog")
 DEFAULT_POLL_SECONDS = 300.0
 DEFAULT_MESSAGE = "继续"
@@ -452,6 +452,12 @@ class SessionConfig:
             if not isinstance(message, str) or not message.strip():
                 raise ValueError("message must be a non-empty string")
             loaded["message"] = message
+        for key in ("max_send_attempts", "max_resumes_per_hour"):
+            if key in document:
+                value = document[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(f"{key} must be an integer greater than or equal to 0")
+                loaded[key] = value
         return loaded
 
 
@@ -497,6 +503,8 @@ class Watchdog:
         self.args = args
         self.default_poll_seconds = args.poll_seconds
         self.default_message = args.message
+        self.default_max_send_attempts = args.max_send_attempts
+        self.default_max_resumes_per_hour = args.max_resumes_per_hour
         self.threads: List[str] = list(args.threads)
         self.trackers: Dict[str, RolloutTracker] = {}
         self.last_logged: Dict[str, str] = {}
@@ -581,8 +589,18 @@ class Watchdog:
         loaded_threads = loaded["session_ids"]
         loaded_poll_seconds = loaded.get("poll_seconds", self.default_poll_seconds)
         loaded_message = loaded.get("message", self.default_message)
+        loaded_max_send_attempts = loaded.get(
+            "max_send_attempts", self.default_max_send_attempts
+        )
+        loaded_max_resumes_per_hour = loaded.get(
+            "max_resumes_per_hour", self.default_max_resumes_per_hour
+        )
         poll_changed = loaded_poll_seconds != self.args.poll_seconds
         message_changed = loaded_message != self.args.message
+        limits_changed = (
+            loaded_max_send_attempts != self.args.max_send_attempts
+            or loaded_max_resumes_per_hour != self.args.max_resumes_per_hour
+        )
 
         previous = set(self.threads)
         current = set(loaded_threads)
@@ -591,6 +609,8 @@ class Watchdog:
         self.threads = loaded_threads
         self.args.poll_seconds = loaded_poll_seconds
         self.args.message = loaded_message
+        self.args.max_send_attempts = loaded_max_send_attempts
+        self.args.max_resumes_per_hour = loaded_max_resumes_per_hour
         for thread_id in removed:
             self.trackers.pop(thread_id, None)
             self.last_logged.pop(thread_id, None)
@@ -601,12 +621,21 @@ class Watchdog:
             LOG.info("Configuration changed: poll_seconds=%s", loaded_poll_seconds)
         if message_changed:
             LOG.info("Configuration changed: message=%r", loaded_message)
+        if limits_changed:
+            LOG.info(
+                "Configuration changed: max_send_attempts=%d, max_resumes_per_hour=%d",
+                loaded_max_send_attempts,
+                loaded_max_resumes_per_hour,
+            )
         LOG.info(
-            "Configuration loaded: monitoring %d session(s), poll_seconds=%s",
+            "Configuration loaded: monitoring %d session(s), poll_seconds=%s, "
+            "max_send_attempts=%d, max_resumes_per_hour=%d",
             len(self.threads),
             self.args.poll_seconds,
+            self.args.max_send_attempts,
+            self.args.max_resumes_per_hour,
         )
-        return bool(added) or poll_changed
+        return bool(added) or poll_changed or limits_changed
 
     def _sleep(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds

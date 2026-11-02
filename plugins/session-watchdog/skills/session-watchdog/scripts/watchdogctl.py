@@ -21,6 +21,8 @@ SERVICE = "codex-session-watchdog.service"
 LEGACY_FEISHU_SERVICE = "codex-feishu-error-notifier.service"
 DEFAULT_POLL_SECONDS = 300.0
 DEFAULT_MESSAGE = "继续"
+DEFAULT_MAX_SEND_ATTEMPTS = 0
+DEFAULT_MAX_RESUMES_PER_HOUR = 0
 
 
 class ControlError(RuntimeError):
@@ -179,6 +181,8 @@ def load_config(create: bool = False) -> Dict[str, Any]:
                     "session_ids": [],
                     "poll_seconds": DEFAULT_POLL_SECONDS,
                     "message": DEFAULT_MESSAGE,
+                    "max_send_attempts": DEFAULT_MAX_SEND_ATTEMPTS,
+                    "max_resumes_per_hour": DEFAULT_MAX_RESUMES_PER_HOUR,
                     "feishu": {
                         "enabled": False,
                         "chat_id": "",
@@ -207,6 +211,15 @@ def load_config(create: bool = False) -> Dict[str, Any]:
     message = document.get("message", DEFAULT_MESSAGE)
     if not isinstance(message, str) or not message.strip():
         raise ControlError("message must be a non-empty string")
+    for key in ("max_send_attempts", "max_resumes_per_hour"):
+        value = document.get(
+            key,
+            DEFAULT_MAX_SEND_ATTEMPTS
+            if key == "max_send_attempts"
+            else DEFAULT_MAX_RESUMES_PER_HOUR,
+        )
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ControlError(f"{key} must be an integer greater than or equal to 0")
     return document
 
 
@@ -239,6 +252,12 @@ def service_state() -> Dict[str, Any]:
         "session_count": len(session_ids),
         "poll_seconds": document.get("poll_seconds", DEFAULT_POLL_SECONDS),
         "message": document.get("message", DEFAULT_MESSAGE),
+        "max_send_attempts": document.get(
+            "max_send_attempts", DEFAULT_MAX_SEND_ATTEMPTS
+        ),
+        "max_resumes_per_hour": document.get(
+            "max_resumes_per_hour", DEFAULT_MAX_RESUMES_PER_HOUR
+        ),
         "feishu": feishu_state(document),
     }
 
@@ -580,7 +599,17 @@ def install() -> Dict[str, Any]:
         raise ControlError("codex executable was not found on PATH")
     migrate_legacy_files()
     atomic_copy(source, worker_path(), 0o755)
-    load_config(create=True)
+    document = load_config(create=True)
+    defaults_added = False
+    for key, value in (
+        ("max_send_attempts", DEFAULT_MAX_SEND_ATTEMPTS),
+        ("max_resumes_per_hour", DEFAULT_MAX_RESUMES_PER_HOUR),
+    ):
+        if key not in document:
+            document[key] = value
+            defaults_added = True
+    if defaults_added:
+        save_config(document)
     atomic_write(unit_path(), unit_content(codex_binary), 0o644)
     install_unit_link()
     systemctl("daemon-reload")
@@ -647,9 +676,25 @@ def update_sessions(values: Sequence[str], remove: bool) -> Dict[str, Any]:
     return service_state()
 
 
-def configure(poll_seconds: Optional[float], message: Optional[str]) -> Dict[str, Any]:
-    if poll_seconds is None and message is None:
-        raise ControlError("configure requires --poll-seconds and/or --message")
+def configure(
+    poll_seconds: Optional[float],
+    message: Optional[str],
+    max_send_attempts: Optional[int] = None,
+    max_resumes_per_hour: Optional[int] = None,
+) -> Dict[str, Any]:
+    if all(
+        value is None
+        for value in (
+            poll_seconds,
+            message,
+            max_send_attempts,
+            max_resumes_per_hour,
+        )
+    ):
+        raise ControlError(
+            "configure requires --poll-seconds, --message, --max-send-attempts, "
+            "and/or --max-resumes-per-hour"
+        )
     document = load_config(create=True)
     if poll_seconds is not None:
         if poll_seconds <= 0:
@@ -659,6 +704,14 @@ def configure(poll_seconds: Optional[float], message: Optional[str]) -> Dict[str
         if not message.strip():
             raise ControlError("message must be non-empty")
         document["message"] = message
+    for key, value in (
+        ("max_send_attempts", max_send_attempts),
+        ("max_resumes_per_hour", max_resumes_per_hour),
+    ):
+        if value is not None:
+            if value < 0:
+                raise ControlError(f"{key} must be greater than or equal to 0")
+            document[key] = value
     save_config(document)
     return service_state()
 
@@ -719,6 +772,8 @@ def build_parser() -> argparse.ArgumentParser:
     configure_parser = subparsers.add_parser("configure")
     configure_parser.add_argument("--poll-seconds", type=float)
     configure_parser.add_argument("--message")
+    configure_parser.add_argument("--max-send-attempts", type=int)
+    configure_parser.add_argument("--max-resumes-per-hour", type=int)
     feishu_parser = subparsers.add_parser("configure-feishu")
     feishu_parser.add_argument("--chat-id", required=True)
     feishu_parser.add_argument("--bytedcli")
@@ -740,7 +795,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command in {"add", "remove"}:
             result = update_sessions(args.session_ids, remove=args.command == "remove")
         elif args.command == "configure":
-            result = configure(args.poll_seconds, args.message)
+            result = configure(
+                args.poll_seconds,
+                args.message,
+                args.max_send_attempts,
+                args.max_resumes_per_hour,
+            )
         elif args.command == "configure-feishu":
             result = configure_feishu(args.chat_id, args.bytedcli)
         elif args.command == "disable-feishu":

@@ -32,7 +32,8 @@ bash install.sh
 session-watchdog-plugin status
 session-watchdog-plugin add <SESSION_ID>
 session-watchdog-plugin remove <SESSION_ID>
-session-watchdog-plugin configure --poll-seconds 300 --message "继续"
+session-watchdog-plugin configure --poll-seconds 300 --message "继续" \
+  --max-send-attempts 0 --max-resumes-per-hour 0
 session-watchdog-plugin list
 session-watchdog-plugin plug-out
 ```
@@ -40,6 +41,8 @@ session-watchdog-plugin plug-out
 本地配置和运行状态分别保存在 `config/config.json` 与 `config/state.json`，它们不会提交到 Git。
 `state.json` 会自动压缩：已处理且不再对应当前会话状态的事件保留 30 天，并最多保留最近
 1000 条；当前事件、未处理事件和重试状态不会被清理。配置格式参考 `config.example.json`。
+`max_send_attempts` 限制同一异常的发送失败重试次数，`max_resumes_per_hour` 限制每个会话
+滚动一小时内成功续跑次数；两者为 `0` 时均表示不限。
 
 ## 飞书通知
 

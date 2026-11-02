@@ -248,11 +248,29 @@ class WatchdogControllerTests(unittest.TestCase):
             redirect_stdout(output),
         ):
             result = pluginctl.main(
-                ["configure", "--poll-seconds", "30", "--message", "继续完成"]
+                [
+                    "configure",
+                    "--poll-seconds",
+                    "30",
+                    "--message",
+                    "继续完成",
+                    "--max-send-attempts",
+                    "4",
+                    "--max-resumes-per-hour",
+                    "3",
+                ]
             )
         self.assertEqual(result, 0)
         manager.assert_called_once_with(
-            "configure", "--poll-seconds", "30.0", "--message", "继续完成"
+            "configure",
+            "--poll-seconds",
+            "30.0",
+            "--message",
+            "继续完成",
+            "--max-send-attempts",
+            "4",
+            "--max-resumes-per-hour",
+            "3",
         )
 
     def test_runtime_settings_are_hot_loaded(self):
@@ -265,6 +283,8 @@ class WatchdogControllerTests(unittest.TestCase):
                         "session_ids": [SESSION_A],
                         "poll_seconds": 17,
                         "message": "请继续处理",
+                        "max_send_attempts": 4,
+                        "max_resumes_per_hour": 3,
                     }
                 ),
                 encoding="utf-8",
@@ -282,6 +302,24 @@ class WatchdogControllerTests(unittest.TestCase):
             self.assertEqual(instance.threads, [SESSION_A])
             self.assertEqual(args.poll_seconds, 17.0)
             self.assertEqual(args.message, "请继续处理")
+            self.assertEqual(args.max_send_attempts, 4)
+            self.assertEqual(args.max_resumes_per_hour, 3)
+
+    def test_runtime_limits_require_nonnegative_integers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "session_ids": [SESSION_A],
+                        "max_send_attempts": -1,
+                        "max_resumes_per_hour": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "max_send_attempts"):
+                worker.SessionConfig(config).load(force=True)
 
     def test_state_pruning_preserves_current_and_retrying_events(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -412,10 +450,12 @@ class WatchdogControllerTests(unittest.TestCase):
                     side_effect=lambda: json.loads(path.read_text(encoding="utf-8")),
                 ),
             ):
-                watchdogctl.configure(45, "继续完成任务")
+                watchdogctl.configure(45, "继续完成任务", 4, 3)
             document = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(document["poll_seconds"], 45)
             self.assertEqual(document["message"], "继续完成任务")
+            self.assertEqual(document["max_send_attempts"], 4)
+            self.assertEqual(document["max_resumes_per_hour"], 3)
 
 
 if __name__ == "__main__":

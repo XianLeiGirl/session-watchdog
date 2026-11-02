@@ -136,7 +136,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
   list      List monitored session IDs.
   add       Add one or more monitored session IDs.
   remove    Stop monitoring one or more session IDs.
-  configure Hot-reload the monitoring interval and/or continuation message.
+  configure Hot-reload the monitoring interval, continuation message, retry
+            limit, and/or per-session hourly resume limit.
   configure-feishu
             Save the Feishu chat ID and bytedcli path, install the Codex notify
             hook, and enable normal completed-turn notifications.
@@ -200,10 +201,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         child.add_argument("session_ids", nargs="+", metavar="SESSION_ID")
     configure_parser = subparsers.add_parser(
         "configure",
-        help="set the monitoring interval and/or continuation message",
+        help="set monitoring, message, retry, and hourly resume settings",
         description=(
-            "Update poll_seconds and/or message in the hot-reloaded configuration. "
-            "The service does not need to restart."
+            "Update poll_seconds, message, max_send_attempts, and/or "
+            "max_resumes_per_hour in the hot-reloaded configuration. Zero means "
+            "unlimited for both limit settings. The service does not need to restart."
         ),
     )
     configure_parser.add_argument(
@@ -214,6 +216,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     configure_parser.add_argument(
         "--message",
         help="non-empty text queued after an abnormal turn failure",
+    )
+    configure_parser.add_argument(
+        "--max-send-attempts",
+        type=int,
+        help="failed queue attempts per event before abandonment; 0 means unlimited",
+    )
+    configure_parser.add_argument(
+        "--max-resumes-per-hour",
+        type=int,
+        help="successful resumes per session in a rolling hour; 0 means unlimited",
     )
     feishu_parser = subparsers.add_parser(
         "configure-feishu",
@@ -264,6 +276,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.extend(["--poll-seconds", str(args.poll_seconds)])
             if args.message is not None:
                 arguments.extend(["--message", args.message])
+            if args.max_send_attempts is not None:
+                arguments.extend(
+                    ["--max-send-attempts", str(args.max_send_attempts)]
+                )
+            if args.max_resumes_per_hour is not None:
+                arguments.extend(
+                    ["--max-resumes-per-hour", str(args.max_resumes_per_hour)]
+                )
             result = manager(*arguments)
         elif args.command == "configure-feishu":
             arguments = ["configure-feishu", "--chat-id", args.chat_id]

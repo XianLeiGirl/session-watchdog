@@ -44,20 +44,24 @@ bash ~/session-watchdog/install.sh
     "019a0000-0000-7000-8000-000000000002"
   ],
   "poll_seconds": 300,
-  "message": "继续"
+  "message": "继续",
+  "max_send_attempts": 0,
+  "max_resumes_per_hour": 0
 }
 ```
 
 可以直接编辑 JSON，或通过统一命令修改：
 
 ```bash
-session-watchdog-plugin configure --poll-seconds 300 --message "继续"
+session-watchdog-plugin configure --poll-seconds 300 --message "继续" \
+  --max-send-attempts 0 --max-resumes-per-hour 0
 session-watchdog-plugin add <SESSION_ID>
 session-watchdog-plugin remove <SESSION_ID>
 ```
 
-配置每 5 秒热加载一次。`poll_seconds` 控制会话检查间隔，`message` 控制异常后发送的文本；两者修改后
-无需重启。新增 ID 会立即纳入并检查；删除 ID 会在最多 5 秒内停止监控。配置暂时写坏时
+配置每 5 秒热加载一次。`poll_seconds` 控制会话检查间隔，`message` 控制异常后发送的文本；
+`max_send_attempts` 限制同一异常的发送失败重试次数，`max_resumes_per_hour` 限制每个会话滚动一小时内
+成功续跑次数，两者为 `0` 均表示不限。修改后无需重启。新增 ID 会立即纳入并检查；删除 ID 会在最多 5 秒内停止监控。配置暂时写坏时
 保留最后一次有效列表，不会误清空全部监控项。
 
 ## 后台常驻与开机自启
@@ -101,7 +105,8 @@ loginctl enable-linger "$USER"
 
 这些 command 固定映射到对应的 `session-watchdog-plugin` 子命令；缺少必要参数时会先询问，不猜测值。
 
-默认每 5 分钟检查一次；任何非人工的异常终止都会发送一次“继续”，异常轮次不限次数。脚本也会恢复启动时
+默认每 5 分钟检查一次；任何非人工的异常终止都会发送一次“继续”。默认两个限制均为 `0`，因此异常轮次和
+发送失败重试都不限次数；可通过 `configure` 设置正整数限制。脚本也会恢复启动时
 已经存在的失败；如不希望恢复旧失败，可使用 `--ignore-old-errors`，并通过 `--max-error-age` 设置年龄上限。
 默认不把“长时间没有新日志”视为失败；如确实需要，可用 `--stale-seconds 1800` 开启，但它可能在超长
 工具调用期间产生误判。
