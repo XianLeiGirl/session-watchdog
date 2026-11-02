@@ -1,0 +1,19 @@
+# Local monitoring configuration and runtime state
+/config/config.json
+/config/state.json
+/config/*.log
+/config/*.tmp
+
+# Generated systemd unit (contains installation-specific absolute paths)
+/systemd/codex-session-watchdog.service
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Editor and operating-system files
+.DS_Store
+*.swp
+*~

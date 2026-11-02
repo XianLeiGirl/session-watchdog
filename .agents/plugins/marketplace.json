@@ -1,0 +1,20 @@
+{
+  "name": "session-watchdog-local",
+  "interface": {
+    "displayName": "Local Session Watchdog"
+  },
+  "plugins": [
+    {
+      "name": "session-watchdog",
+      "source": {
+        "source": "local",
+        "path": "./plugins/session-watchdog"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

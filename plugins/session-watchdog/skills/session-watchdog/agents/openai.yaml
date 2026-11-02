@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Watchdog"
+  short_description: "Manage resilient Codex session monitoring"
+  default_prompt: "Use $session-watchdog to show the watchdog service status."
