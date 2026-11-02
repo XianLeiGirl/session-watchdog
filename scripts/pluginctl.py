@@ -140,7 +140,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             limit, and/or per-session hourly resume limit.
   configure-feishu
             Save the Feishu chat ID and bytedcli path, install the Codex notify
-            hook, and enable normal completed-turn notifications.
+            hook, and enable normal completed-turn notifications. If the default
+            bytedcli is missing, install it and return a one-time Feishu app/bot
+            creation URL; complete that setup and rerun this command.
   disable-feishu
             Stop Feishu notifications and restore the previous Codex notify hook.
   start/stop/restart
@@ -232,7 +234,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="configure and enable normal Codex completed-turn notifications in Feishu",
         description=(
             "Save the Feishu chat ID and bytedcli executable, install the Codex "
-            "notify hook, and enable normal completed-turn notifications."
+            "notify hook, and enable normal completed-turn notifications. If the "
+            "default bytedcli is missing, install it, install its global skill, "
+            "and return a one-time Feishu app/bot creation URL. Complete that "
+            "browser setup and rerun this command to enable notifications."
         ),
     )
     feishu_parser.add_argument(
@@ -242,7 +247,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     feishu_parser.add_argument(
         "--bytedcli",
-        help="bytedcli executable name or absolute path (default: resolve bytedcli on PATH)",
+        help=(
+            "bytedcli executable name or absolute path (default: resolve on PATH; "
+            "auto-install the default command when missing)"
+        ),
     )
     subparsers.add_parser(
         "disable-feishu",

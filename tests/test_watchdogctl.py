@@ -230,6 +230,150 @@ class WatchdogControllerTests(unittest.TestCase):
                 calls,
             )
 
+    def test_install_bytedcli_uses_requested_package_registry_and_skill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "bytedcli"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(0o755)
+
+            def fake_which(command):
+                return "/usr/bin/npm" if command == "npm" else str(binary)
+
+            with (
+                mock.patch.object(watchdogctl.shutil, "which", side_effect=fake_which),
+                mock.patch.object(
+                    watchdogctl,
+                    "run",
+                    return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+                ) as run,
+            ):
+                installed = watchdogctl.install_bytedcli()
+
+        self.assertEqual(installed, str(binary.resolve()))
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(
+                    [
+                        "/usr/bin/npm",
+                        "install",
+                        "-g",
+                        "@bytedance-dev/bytedcli@latest",
+                        "--registry",
+                        "https://bnpm.byted.org",
+                    ]
+                ),
+                mock.call(
+                    [
+                        str(binary.resolve()),
+                        "self",
+                        "skill",
+                        "install",
+                        "--skill",
+                        "bytedcli",
+                        "-g",
+                    ]
+                ),
+            ],
+        )
+
+    def test_lark_app_setup_returns_generated_creation_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def fake_popen(command, **kwargs):
+                kwargs["stdout"].write(
+                    'verification_url: https://open.feishu.cn/setup?code=one-time\n'
+                )
+                kwargs["stdout"].flush()
+                process = mock.Mock(pid=12345)
+                process.poll.return_value = None
+                return process
+
+            with (
+                mock.patch.object(watchdogctl, "config_dir", return_value=root),
+                mock.patch.object(
+                    watchdogctl.subprocess, "Popen", side_effect=fake_popen
+                ) as popen,
+            ):
+                result = watchdogctl.start_lark_app_setup("/opt/bin/bytedcli")
+
+            self.assertEqual(
+                result["agent_creation_url"],
+                "https://open.feishu.cn/setup?code=one-time",
+            )
+            self.assertEqual(result["setup_pid"], 12345)
+            self.assertEqual(
+                popen.call_args.args[0],
+                [
+                    "/opt/bin/bytedcli",
+                    "--no-auto-upgrade",
+                    "lark",
+                    "config",
+                    "--new",
+                ],
+            )
+
+    def test_configure_feishu_bootstraps_missing_bytedcli_without_partial_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            original = {"session_ids": [SESSION_A]}
+            config.write_text(json.dumps(original), encoding="utf-8")
+            with (
+                mock.patch.object(watchdogctl, "config_path", return_value=config),
+                mock.patch.object(
+                    watchdogctl,
+                    "resolve_bytedcli",
+                    side_effect=watchdogctl.ControlError("missing"),
+                ),
+                mock.patch.object(
+                    watchdogctl,
+                    "install_bytedcli",
+                    return_value="/opt/bin/bytedcli",
+                ) as install,
+                mock.patch.object(
+                    watchdogctl,
+                    "start_lark_app_setup",
+                    return_value={
+                        "agent_creation_url": "https://open.feishu.cn/setup?code=test",
+                        "setup_log": "/tmp/setup.log",
+                        "setup_pid": 42,
+                    },
+                ) as setup,
+            ):
+                result = watchdogctl.configure_feishu("oc_test", None)
+
+            self.assertTrue(result["bytedcli_installed"])
+            self.assertTrue(result["setup_required"])
+            self.assertFalse(result["feishu_configured"])
+            self.assertEqual(
+                json.loads(config.read_text(encoding="utf-8")),
+                original,
+            )
+            install.assert_called_once_with()
+            setup.assert_called_once_with("/opt/bin/bytedcli")
+
+    def test_configure_feishu_does_not_replace_missing_explicit_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"session_ids": []}), encoding="utf-8")
+            with (
+                mock.patch.object(watchdogctl, "config_path", return_value=config),
+                mock.patch.object(
+                    watchdogctl,
+                    "resolve_bytedcli",
+                    side_effect=watchdogctl.ControlError("missing explicit binary"),
+                ),
+                mock.patch.object(watchdogctl, "install_bytedcli") as install,
+            ):
+                with self.assertRaisesRegex(
+                    watchdogctl.ControlError, "missing explicit binary"
+                ):
+                    watchdogctl.configure_feishu(
+                        "oc_test", "/custom/bin/bytedcli"
+                    )
+            install.assert_not_called()
+
     def test_unified_command_delegates_session_add(self):
         output = io.StringIO()
         with (

@@ -46,12 +46,24 @@ session-watchdog-plugin plug-out
 
 ## 飞书通知
 
-已安装并登录 `bytedcli` 后，可启用 Codex 正常完成通知：
+可启用 Codex 正常完成通知：
 
 ```bash
 session-watchdog-plugin configure-feishu --chat-id <FEISHU_CHAT_ID>
 session-watchdog-plugin status
 ```
+
+如果首次配置时找不到默认的 `bytedcli`，命令会自动执行：
+
+```bash
+npm install -g @bytedance-dev/bytedcli@latest --registry https://bnpm.byted.org
+bytedcli self skill install --skill bytedcli -g
+```
+
+随后它会启动飞书应用/机器人创建流程，并在输出的 `agent_creation_url` 中返回一次性链接。
+请打开链接完成网页配置，然后使用相同的 chat ID 再运行一次 `configure-feishu`。首次引导不会
+提前修改 Session Watchdog 的飞书配置或 Codex `notify` hook。若明确传入的自定义
+`--bytedcli` 路径不存在，命令仍会报错，不会用自动安装覆盖该选择。
 
 `configure-feishu` 会把 chat ID 和解析后的 `bytedcli` 路径写入不会提交到 Git 的
 `config/config.json`，备份原 Codex `notify` 设置，然后把入口改为

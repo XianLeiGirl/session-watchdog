@@ -22,7 +22,7 @@ When the user invokes an explicit `/session-watchdog-*` command, follow that com
 - Add monitored sessions: `add <session-id>...`.
 - Remove monitored sessions: `remove <session-id>...`.
 - Configure hot-reloaded monitoring settings: `configure [--poll-seconds <seconds>] [--message <text>] [--max-send-attempts <count>] [--max-resumes-per-hour <count>]`; either limit uses `0` for unlimited.
-- Configure and enable normal Feishu completed-turn notifications: `configure-feishu --chat-id <chat-id> [--bytedcli <path>]`.
+- Configure and enable normal Feishu completed-turn notifications: `configure-feishu --chat-id <chat-id> [--bytedcli <path>]`. When the default `bytedcli` is absent, this command installs the latest CLI from the ByteDance npm registry, globally installs its `bytedcli` skill, and returns the dynamically generated Feishu app/bot creation URL. It does not change the saved Feishu configuration or Codex notify hook on that first bootstrap run; after completing browser setup, rerun the same command. A missing explicitly supplied custom path remains an error and is never replaced automatically.
 - Disable Feishu notifications and restore the prior Codex notify hook: `disable-feishu`.
 - Control the installed service: `start`, `stop`, or `restart`.
 - Remove the plugin, service, and managed worker while preserving configuration: `plug-out`.

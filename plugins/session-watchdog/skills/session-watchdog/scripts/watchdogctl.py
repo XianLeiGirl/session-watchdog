@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -23,6 +24,14 @@ DEFAULT_POLL_SECONDS = 300.0
 DEFAULT_MESSAGE = "继续"
 DEFAULT_MAX_SEND_ATTEMPTS = 0
 DEFAULT_MAX_RESUMES_PER_HOUR = 0
+BYTEDCLI_NPM_PACKAGE = "@bytedance-dev/bytedcli@latest"
+BYTEDCLI_NPM_REGISTRY = "https://bnpm.byted.org"
+BYTEDCLI_SKILL = "bytedcli"
+LARK_SETUP_TIMEOUT_SECONDS = 60.0
+LARK_SETUP_URL_PATTERN = re.compile(
+    r"(?i)(?:verification_url|verification_uri_complete|console_url)"
+    r"[\"'=:\s]+(https://[^\s\"'<>]+)"
+)
 
 
 class ControlError(RuntimeError):
@@ -444,6 +453,122 @@ def resolve_bytedcli(value: str) -> str:
     return str(Path(resolved).resolve())
 
 
+def install_bytedcli() -> str:
+    npm = shutil.which("npm")
+    if npm is None:
+        raise ControlError(
+            "npm was not found on PATH; install Node.js/npm before configuring Feishu"
+        )
+
+    run(
+        [
+            npm,
+            "install",
+            "-g",
+            BYTEDCLI_NPM_PACKAGE,
+            "--registry",
+            BYTEDCLI_NPM_REGISTRY,
+        ]
+    )
+
+    resolved = shutil.which("bytedcli")
+    if resolved is None:
+        prefix = run([npm, "prefix", "-g"])
+        npm_prefix = Path(prefix.stdout.strip()).expanduser()
+        candidates = (
+            npm_prefix / "bin" / "bytedcli",
+            npm_prefix / "bytedcli",
+            npm_prefix / "bin" / "bytedcli.cmd",
+            npm_prefix / "bytedcli.cmd",
+        )
+        resolved = next(
+            (
+                str(candidate)
+                for candidate in candidates
+                if candidate.is_file() and os.access(candidate, os.X_OK)
+            ),
+            None,
+        )
+    if resolved is None:
+        raise ControlError(
+            "bytedcli was installed by npm but its executable could not be found"
+        )
+
+    binary = str(Path(resolved).resolve())
+    run(
+        [
+            binary,
+            "self",
+            "skill",
+            "install",
+            "--skill",
+            BYTEDCLI_SKILL,
+            "-g",
+        ]
+    )
+    return binary
+
+
+def extract_lark_setup_url(output: str) -> Optional[str]:
+    match = LARK_SETUP_URL_PATTERN.search(output)
+    return match.group(1) if match is not None else None
+
+
+def start_lark_app_setup(bytedcli: str) -> Dict[str, Any]:
+    log_path = config_dir() / "bytedcli_lark_config.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.chmod(log_path, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [
+                bytedcli,
+                "--no-auto-upgrade",
+                "lark",
+                "config",
+                "--new",
+            ],
+            text=True,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    deadline = time.monotonic() + LARK_SETUP_TIMEOUT_SECONDS
+    output = ""
+    while time.monotonic() < deadline:
+        try:
+            output = log_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            process.terminate()
+            raise ControlError(f"cannot read bytedcli setup output {log_path}: {exc}") from exc
+        url = extract_lark_setup_url(output)
+        if url is not None:
+            return {
+                "agent_creation_url": url,
+                "setup_log": str(log_path),
+                "setup_pid": process.pid,
+            }
+        return_code = process.poll()
+        if return_code is not None:
+            details = output.strip()
+            raise ControlError(
+                "bytedcli could not create a Feishu app setup link"
+                f" (exit {return_code}){': ' + details if details else ''}"
+            )
+        time.sleep(0.1)
+
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+    raise ControlError(
+        "timed out waiting for bytedcli to create the Feishu app setup link; "
+        f"see {log_path}"
+    )
+
+
 def feishu_state(document: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if document is None:
         document = load_config(create=False)
@@ -723,17 +848,41 @@ def configure_feishu(chat_id: str, bytedcli: Optional[str]) -> Dict[str, Any]:
     previous = document.get("feishu")
     feishu = dict(previous) if isinstance(previous, dict) else {}
     binary = bytedcli or str(feishu.get("bytedcli", "bytedcli"))
+    try:
+        resolved_binary = resolve_bytedcli(binary)
+    except ControlError:
+        if bytedcli is not None and bytedcli.strip() != "bytedcli":
+            raise
+        resolved_binary = install_bytedcli()
+        setup = start_lark_app_setup(resolved_binary)
+        return {
+            "bytedcli": resolved_binary,
+            "bytedcli_installed": True,
+            "bytedcli_skill_installed": True,
+            "feishu_configured": False,
+            "setup_required": True,
+            **setup,
+            "next_step": (
+                "Open agent_creation_url, complete the Feishu app setup, then rerun "
+                "session-watchdog-plugin configure-feishu with the same chat ID."
+            ),
+        }
     feishu.update(
         {
             "enabled": True,
             "chat_id": chat_id.strip(),
-            "bytedcli": resolve_bytedcli(binary),
+            "bytedcli": resolved_binary,
         }
     )
     document["feishu"] = feishu
     save_config(document)
     install_feishu()
-    return service_state()
+    state = service_state()
+    try:
+        (config_dir() / "bytedcli_lark_config.log").unlink()
+    except FileNotFoundError:
+        pass
+    return state
 
 
 def disable_feishu() -> Dict[str, Any]:

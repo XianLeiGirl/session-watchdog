@@ -119,11 +119,23 @@ loginctl enable-linger "$USER"
 
 ## 飞书正常完成通知
 
-飞书通知依赖已安装、已登录的 `bytedcli`。启用并配置目标群聊：
+启用并配置目标群聊：
 
 ```bash
 session-watchdog-plugin configure-feishu --chat-id <FEISHU_CHAT_ID>
 ```
+
+若首次运行时默认的 `bytedcli` 不在 `PATH` 中，命令会自动运行：
+
+```bash
+npm install -g @bytedance-dev/bytedcli@latest --registry https://bnpm.byted.org
+bytedcli self skill install --skill bytedcli -g
+```
+
+安装成功后，命令会在后台启动 `bytedcli lark config --new`，并把动态生成的一次性
+飞书应用/机器人创建链接作为 `agent_creation_url` 返回。打开该链接完成网页配置后，使用同一个
+chat ID 再次执行 `configure-feishu`，才会启用通知。引导阶段不会部分写入飞书配置，也不会修改
+Codex `notify` hook。自动安装依赖本机已有 `npm`；若安装、Skill 安装或链接生成失败，命令会报错。
 
 如 `bytedcli` 不在 `PATH` 中，可明确指定：
 
@@ -132,6 +144,8 @@ session-watchdog-plugin configure-feishu \
   --chat-id <FEISHU_CHAT_ID> \
   --bytedcli /absolute/path/to/bytedcli
 ```
+
+明确指定的路径不存在时会直接报错，不会自动安装并覆盖该路径。
 
 该命令会执行以下动作：
 

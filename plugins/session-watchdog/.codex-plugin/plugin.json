@@ -1,6 +1,6 @@
 {
   "name": "session-watchdog",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Monitor selected Codex sessions and optionally notify Feishu after normal completed turns.",
   "author": {
     "name": "Local"
