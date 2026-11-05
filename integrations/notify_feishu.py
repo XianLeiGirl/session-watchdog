@@ -24,7 +24,10 @@ CONFIG_PATH = Path(
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
 LOG_PATH = CONFIG_PATH.parent / "notify_feishu.log"
 MAX_TASK_NAME_CHARS = 80
-TASK_TITLE_PROMPT_PREFIX = "Generate a concise, single-line task title"
+INTERNAL_PROMPT_PREFIXES = (
+    "Generate a concise, single-line task title",
+    "Write a brief catch-up for a user returning to this task.",
+)
 
 
 class FeishuConfigError(RuntimeError):
@@ -127,7 +130,7 @@ def title_from_inputs(value: Any) -> str | None:
     return None
 
 
-def is_internal_title_generation(payload: dict[str, Any]) -> bool:
+def is_internal_prompt(payload: dict[str, Any]) -> bool:
     value = payload.get("input-messages")
     if not isinstance(value, list):
         return False
@@ -143,7 +146,7 @@ def is_internal_title_generation(payload: dict[str, Any]) -> bool:
 
         if any(
             isinstance(candidate, str)
-            and candidate.lstrip().startswith(TASK_TITLE_PROMPT_PREFIX)
+            and candidate.lstrip().startswith(INTERNAL_PROMPT_PREFIXES)
             for candidate in candidates
         ):
             return True
@@ -261,7 +264,7 @@ def notify_completion(raw_payload: str) -> int:
             "interrupted",
         }:
             return 0
-    if is_internal_title_generation(payload):
+    if is_internal_prompt(payload):
         return 0
 
     event_key = "|".join(

@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import shutil
 import sys
 import tempfile
 import tomllib
@@ -96,17 +97,36 @@ class WatchdogControllerTests(unittest.TestCase):
             self.assertEqual(notifier.notify_completion(json.dumps(payload)), 0)
         send.assert_not_called()
 
+    def test_internal_catch_up_and_title_turns_do_not_notify(self):
+        prompts = (
+            "Write a brief catch-up for a user returning to this task. "
+            "Return JSON with summary.",
+            "Generate a concise, single-line task title for this conversation.",
+        )
+        with mock.patch.object(notifier, "send_feishu", return_value=0) as send:
+            for index, prompt in enumerate(prompts):
+                payload = {
+                    "type": "agent-turn-complete",
+                    "thread-id": SESSION_A,
+                    "turn-id": f"internal-{index}",
+                    "input-messages": [{"text": f"  {prompt}"}],
+                }
+                self.assertEqual(notifier.notify_completion(json.dumps(payload)), 0)
+        send.assert_not_called()
+
     def test_send_uses_server_idempotency_without_local_ledger(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "config.json"
+            true_binary = shutil.which("true")
+            self.assertIsNotNone(true_binary)
             config.write_text(
                 json.dumps(
                     {
                         "feishu": {
                             "enabled": True,
                             "chat_id": "oc_test",
-                            "bytedcli": "/bin/true",
+                            "bytedcli": true_binary,
                         }
                     }
                 ),

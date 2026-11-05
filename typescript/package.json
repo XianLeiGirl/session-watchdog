@@ -1,0 +1,51 @@
+{
+  "name": "session-watchdog",
+  "version": "0.2.1",
+  "description": "Monitor Codex rollout sessions and safely resume failed turns.",
+  "keywords": ["codex", "watchdog", "session", "automation", "cli"],
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "bin": {
+    "session-watchdog": "dist/esm/cli.js",
+    "session-watchdog-plugin": "dist/esm/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "src", "README.md"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XianLeiGirl/session-watchdog.git",
+    "directory": "typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/XianLeiGirl/session-watchdog/issues"
+  },
+  "homepage": "https://github.com/XianLeiGirl/session-watchdog#readme",
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "check": "npm run typecheck && npm test && npm audit --audit-level=moderate",
+    "prepublishOnly": "npm run check",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

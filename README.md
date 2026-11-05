@@ -2,6 +2,10 @@
 
 Session Watchdog 是一个本地 Codex 会话监控工具。它定期检查配置中的会话，发现非人工触发的异常终止后，自动发送可配置的续跑消息；人工停止和正常结束不会触发续跑。
 
+仓库同时保留两种实现：根目录为原有 Python 插件，`typescript/` 为可发布到 npm 的
+TypeScript/Node.js 核心运行时与 CLI。两者互不覆盖；TypeScript 版的安装和使用见
+[`typescript/README.md`](typescript/README.md)。
+
 ## 安装
 
 一条命令下载到 `~/session-watchdog` 并创建命令入口：
